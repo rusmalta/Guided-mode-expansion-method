@@ -1,0 +1,249 @@
++# -*- coding: utf-8 -*-
+"""
+@author: Kirill Koshelev
+
+Program calculates spectrum of 1D Photonic crystal slab (PhC slab) by using 
+Guided-mode expansion method.  
+
+Program parts:
+1. Effective waveguide spectrum
+2. Parameters of basis set of guided modes: constants, normalization
+3. Matrix elements for eigenvalue problem
+4. Solution of eigenvalue problem
+
+Notes:
+1. PhC slab consists of three different layers: 
+------
+  3
+------
+  2
+------
+  1
+------
+
+2. Layers 1 and 3 (lower and upper claddings) - semiinfinite. 
+
+"""
+
+#route to the modules with program parts
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), "modules"))
+ 
+#imports module for numerical calculations
+import numpy as np
+#imports module for visualization of results
+import matplotlib.pyplot as plt
+import time
+
+### import modules
+
+#construct direct and inverse dielectric matrix for chosen pattern and lattice
+import mod_eps as fourier
+import mod_funcs as funcs
+      
+def Dispersion_PhC(N_k_step, n_PW, N_alpha, G_grid, a, L, epsilon, eta, N_eig):
+
+    k_max =  np.pi / a
+    k_arr = np.linspace(k_max * 1e-20, k_max * 1e-10, N_k_step)
+
+    omega = np.zeros((N_k_step, N_eig)) 
+    omega_im = np.zeros((N_k_step, N_eig))
+    
+    startTime = time.time() 
+    for j in range(0, N_k_step):
+#            startTime0 = time.time()
+            K = k_arr[j] 
+            omega[j, :], omega_im[j, :] = funcs.Eig_Solve(K, n_PW, N_alpha, G_basis, G_grid, a, L, eps_exact, epsilon, eta, N_eig)
+#            perc = (j) / (N_k_step )        
+#            print (round(perc * 100, 2),"%")
+            
+#            elapsedTime0 = time.time() - startTime0
+#            print ('time', round(elapsedTime0, 3), 's')
+                
+    elapsedTime = time.time() - startTime
+#    print ('TIME TOTAL -', round(elapsedTime, 3), 's')
+
+
+    return (omega, omega_im, k_arr)
+    
+
+def Sorting(omega_arr, k_arr, N_eig):
+    
+    size = omega_arr[:, 0].size
+    X = k_arr
+    Y = omega_arr
+    
+    omega_s = np.zeros(Y.shape)
+    
+    omega_s[0 : 2, :] = Y[0 : 2, :]
+        
+    for j in range(0, N_eig):
+
+        M = np.array([[0, 0, 0], [X[0] ** 2, X[0], 1], [X[1] ** 2, X[1], 1]])
+        Y_arr = [0, Y[0, 0], Y[1, 0]]
+        for i in range(2, size - 1):
+            M = np.delete(M, 0, 0)
+            M = np.append(M, [[X[i] ** 2, X[i], 1]], 0)
+            M_det = np.linalg.det(M)
+            Y_arr = np.delete(Y_arr, 0, 0)
+            Y_arr = np.append(Y_arr, Y[i, 0])
+            a0 = np.linalg.det(np.delete(np.insert(M, 0, [Y[i-2, 0], Y[i-1, 0], Y[i, 0]], 1), 1, 1)) / M_det
+            a1 = np.linalg.det(np.delete(np.insert(M, 1, [Y[i-2, 0], Y[i-1, 0], Y[i, 0]], 1), 2, 1)) / M_det
+            a2 = np.linalg.det(np.delete(np.insert(M, 2, [Y[i-2, 0], Y[i-1, 0], Y[i, 0]], 1), 3, 1)) / M_det
+            
+            Y_est = a0 *  X[i+1] ** 2 + a1 * X[i+1] + a2
+            diff = abs(Y[i+1, :] - Y_est)
+            
+            temp_j = np.argmin(diff)
+            temp_y = Y[i+1, 0]  
+            Y[i+1, 0] = Y[i+1, temp_j]
+            Y[i+1, temp_j] = temp_y
+             
+        omega_s[:, j] = Y[:, 0]
+        Y = np.delete(Y, 0, 1) 
+    
+    return omega_s 
+    
+
+
+######INPUT DATA
+      
+N_alpha = 1    #number of modes for each wavevector (modes of lateral quantization)
+n_PW = 50   #number of plane waves in expansion is N_PW=(n_PW+1)
+N_eig = 1  #number of solutions - output
+N_k_step = 2
+    
+
+## Main parameters   
+a = 20 # (!!! in values of h !!!)
+L = 0.3 * a # hole length 
+
+N_contrast = 100
+
+contrast = np.linspace(0, 0.8, N_contrast)
+re_contrast = np.zeros(N_contrast)
+im_contrast = np.zeros(N_contrast)
+
+
+
+for u in range(0, N_contrast):
+         
+    #PERMITTIVITIES: 1st row - hole material, 2nd row - background material
+    dn_sub = contrast[u]
+    eps_mat = 12
+    eps_sup = 1
+    eps_sub = (eps_sup+dn_sub) ** 2
+    
+         
+    eps_exact = np.zeros((3, 2))
+    eps_exact[0, 0] = eps_sub; eps_exact[0, 1] = eps_sub #LOWER CLADDING
+    eps_exact[1, 0] = eps_sup; eps_exact[1, 1] = eps_mat #CORE CLADDING 
+    eps_exact[2, 0] = eps_sup; eps_exact[2, 1] = eps_sup #UPPER CLADDING
+    
+    
+    #EFFECTIVE EPSILON
+    epsilon = np.zeros(3)
+    for i in range(0,3):
+        epsilon[i] = fourier.dielectric(eps_exact[i, :], 0, L, a) 
+    #    epsilon[1] = 9   
+    
+    #BASIS VECTORS AND ROUTES in k-space for Gamma-X, X-M, M-Gamma and Gamma-M directions
+    G_basis = np.pi * 2 / a
+    G_grid = funcs.Grid(n_PW, G_basis)
+    
+    n_size = (n_PW + 1)
+    eta = np.zeros((3, n_size, n_size), dtype = complex)
+    eta[0] = fourier.dielectric_matrix(G_grid, G_grid, 1 / eps_exact[0], L, a)
+    eta[1] = fourier.dielectric_matrix(G_grid, G_grid, 1 / eps_exact[1], L, a)
+    eta[2] = fourier.dielectric_matrix(G_grid, G_grid, 1 / eps_exact[2], L, a)
+    
+    
+    omega_arr, omega_arr_I, k_r = Dispersion_PhC(N_k_step, n_PW, N_alpha, G_grid, a, L, epsilon, eta, N_eig)
+    
+    
+    #dimensionless variables (a/wavelength)
+    norm = a / (2 * np.pi)
+    omega_arr  =  omega_arr * norm  
+    omega_arr_I = omega_arr_I * norm   
+    k_r = k_r * norm   
+    
+     
+    #Quality factor
+    Q_arr = omega_arr / (omega_arr_I + 1e-40) / 2. 
+    
+                 
+    #norm_THz = 3e2 / a
+    #omega_arr  =  omega_arr * norm_THz
+     
+    
+#    omega_arr_sort = Sorting(omega_arr, k_r, N_eig)
+    
+    
+    
+    ##DISPERSION PLOT 
+    #plt.figure(figsize = (5, 7))
+    #plt.plot(k_r  , omega_arr[:, 0], color = 'k', marker = '.', linewidth = 0., mew = '0.1')
+    #plt.plot(k_r  , omega_arr[:, 1], color = 'k', marker = '.', linewidth = 0., mew = '0.1')
+    #plt.plot(k_r  , omega_arr[:, 2], color = 'k', marker = '.', linewidth = 0., mew = '0.1')
+    ##plt.plot(k_r  , omega_arr[:, 3], color = 'b', marker = '.', linewidth = 0., mew = '0.1')
+    ##plt.plot(k_r  , omega_arr[:, 4], color = 'y', marker = '.', linewidth = 0., mew = '0.1')
+    #
+    ###plot light line in cladding layers (omega = c * k / sqrt(eps_clad))
+    #plt.plot(k_r , k_r / np.sqrt(eps_exact[2, 0]), color = 'r', linestyle = '--')
+    #plt.plot(k_r , k_r / np.sqrt(eps_exact[0, 0]), color = 'b', linestyle = '--')
+    #plt.xlim(0, 0.1)
+    #plt.ylim(0, 0.8)
+    #plt.close
+    #
+    #
+    ##QUALITY FACTOR PLOT
+    #plt.figure(figsize = (5, 7))
+    #plt.semilogy(k_r, Q_arr[:, 0], color = 'k', marker = '.', linewidth=0., mew = '0.1')
+    #plt.semilogy(k_r, Q_arr[:, 1], color = 'k', marker = '.', linewidth=0., mew = '0.1')
+    #plt.semilogy(k_r, Q_arr[:, 2], color = 'k', marker = '.', linewidth=0., mew = '0.1')
+    ##plt.semilogy(k_r, Q_arr[:, 3], color = 'b', marker = '.', linewidth=0., mew = '0.1')
+    ##plt.semilogy(k_r, Q_arr[:, 4], color = 'y', marker = '.', linewidth=0., mew = '0.1')
+    #plt.xlim(0., 0.1)
+    #plt.ylim(1e1, 1e8)
+    #plt.close
+    ##plt.savefig(os.path.dirname(__file__)+'/figs/Q_nPW'+str(m)+'.eps', format="eps")
+    
+    re_contrast[u] = omega_arr[0, 0]
+    im_contrast[u] = omega_arr_I[0,0]
+#    print (omega_arr[0, 0:2]-1/np.sqrt(eps_sub))
+#    print ("")
+#    
+#    print (Q_arr[0, 0:2])
+#    print ("")
+
+plt.figure(figsize = (5, 7))
+plt.plot(contrast, re_contrast, color = 'b', marker = '.', linewidth = 0., mew = '0.1')
+plt.plot(contrast, 1/(contrast+1), color = 'r', marker = '.', linewidth = 0., mew = '0.1')
+plt.ylim(0.4, 1.7)
+plt.xlabel('n_sub-n_sup, a.u.')
+plt.ylabel('omega * period / (2 pi c), a.u.')
+
+plt.figure(figsize = (5, 7))
+plt.plot(contrast,im_contrast, color = 'b', marker = '.', linewidth=0., mew = '0.1')
+plt.xlabel('n_sub-n_sup, a.u.')
+plt.ylabel('gamma * period / (2 pi c), a.u.')
+#dispersion of effective waveguide
+
+#g=np.arange(0.1,10,0.1)
+#omega_TM=np.zeros((len(g),5))
+#omega_TE=np.zeros((len(g),5))
+#
+#for n in range(0,len(g)):
+##    omega_TM[n,:]=Dispersion_TM(g[n],N_alpha)
+#    omega_TE[n,:]=gme.wg.Dispersion_TE(g[n],5,epsilon)
+#
+#NN, gg=np.meshgrid(np.arange(0,5,1),g)
+#
+#fig3 = plt.gcf()
+##plt.plot(gg,omega_TM)
+#plt.plot(gg,omega_TE)
+#plt.plot(g,g/np.sqrt(epsilon[1]))
+#plt.plot(g,g/np.sqrt(epsilon[0]))
+##plt.plot(g,g/np.sqrt(epsilon[2]))
+##plt.plot(g,g/np.sqrt(epsilon[0]))
+#plt.show
